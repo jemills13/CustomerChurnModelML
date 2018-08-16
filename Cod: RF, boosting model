@@ -1,0 +1,281 @@
+"Assignment 2"
+"Group 2-05"
+"Jonny Mills"
+
+##############################
+### R part model###
+##############################
+
+rm(list=ls())
+
+##############################
+### Load required packages ###
+##############################
+installIfAbsentAndLoad  <-  function(neededVector) {
+      if(length(neededVector) > 0) {
+            for(thispackage in neededVector) {
+                  if(! require(thispackage, character.only = T)) {
+                        install.packages(thispackage)}
+                  require(thispackage, character.only = T)
+            }
+      }
+}
+needed <- c('rpart',"rattle","splines","boot")      
+installIfAbsentAndLoad(needed)
+
+#Prepare data
+mydata<-read.table("Assignment2TrainData.csv",sep=",",header=T)
+mydata[,3] <- as.factor(mydata[,3])
+dim(mydata)
+set.seed(5082)
+n <- nrow(mydata)
+train <- sample(n, 0.85*n)
+trainset <- mydata[train,-1]
+testset <- mydata[-train,-1] 
+
+
+###create and examine classification model with cp=0, minsplit=2,minbucket=1 (we'll prune the tree later) ###
+
+
+rpart <- rpart(Churn ~ .,data=trainset, method="class",parms=list(split="information"),
+               control=rpart.control(usesurrogate=0, maxsurrogate=0,cp=0, minsplit=1,minbucket=2))
+
+print(rpart)
+printcp(rpart)                         
+summary(rpart)
+
+preds <- predict(rpart, newdata = testset, type="class")
+table.unpruned <- table(testset$Churn, preds,dnn=c("Actual", "Predicted"))
+
+table.unpruned
+(table.unpruned[1,2] + table.unpruned[2,1])/sum(table.unpruned)
+
+###prune classification tree###
+rpart$cptable
+min.xerror <- which.min(rpart$cptable[,'xerror'])
+min.cp <- rpart$cptable[min.xerror,"CP"]
+min.cp
+rpart.prune <- prune(rpart,cp=min.cp)
+
+rpart.prune$cptable
+fancyRpartPlot(rpart.prune, main="Pruned Customer Churn Prediction Model")
+
+###evaluate predictive power using test dataset###
+asRules(rpart.prune)
+predict <- predict(rpart.prune, newdata=testset, type="class")
+table1 <- table(testset$Churn, predict,dnn=c("Actual", "Predicted"))
+table1
+(table1[1,2] + table1[2,1])/sum(table1)
+
+
+#cost model
+#type 1 error: customers we said would leave, but actually didn't. 
+type1error = table1[1,2] * 1600
+#type 2 error: customers we said wouldn't leave, but actually did. ie) 
+type2error = table1[2,1] * 11500
+correctly_identified_loss = (table1[2,2] * 1600) + (table1[2,2] * .55 * 11500)
+#add the costs of the two different errors to get an overall expected cost. ie) 
+(overall_error = type1error + type2error + correctly_identified_loss)
+(average_cost_per_cust = overall_error/sum(table1))
+#Cost is $2627.53 per customer
+
+
+##############################
+### Random forrest model###
+##############################
+
+rm(list=ls())
+"Assignment 2"
+"Group 2-05"
+
+installIfAbsentAndLoad <- function(neededVector) {
+      for(thispackage in neededVector) {
+            if( ! require(thispackage, character.only = TRUE) )
+            { install.packages(thispackage)}
+            require(thispackage, character.only = TRUE)
+      }
+}
+needed = c("randomForest", "pROC", "verification", "rpart")
+installIfAbsentAndLoad(needed)
+
+require(randomForest)
+
+###Import the data
+mydata<-read.table("Assignment2TrainData.csv",sep=",",header=T)
+mydata[,3] <- as.factor(mydata[,3])
+dim(mydata)
+set.seed(5082)
+n <- nrow(mydata)
+train <- sample(n, 0.85*n)
+trainset <- mydata[train,-1]
+testset <- mydata[-train,-1] 
+nobs = nrow(mydata)
+test <- setdiff(1:nobs, train)
+
+###Grow a 500-tree forest
+rf <- randomForest(formula=Churn ~ .,data=trainset,ntree=500, mtry=4,
+                   importance=TRUE,localImp=TRUE,na.action=na.roughfix,replace=FALSE)
+head(rf$predicted,25)
+
+
+###Examine Error Rates for the number of trees
+plot(rf, main="Error Rates for Random Forest")
+legend("topright", c("OOB", "No", "Yes"), text.col=1:6, lty=1:3, col=1:3)
+min.err <- min(rf$err.rate[,"OOB"])
+min.err.idx <- which(rf$err.rate[,"OOB"]== min.err)
+min.err.idx
+rf$err.rate[min.err.idx[1],]
+
+
+cutoffs = seq(.6,.85,.05)
+results = c()
+TN = c()
+mtry = seq(1,19,1)
+
+for (j in mtry){
+      for (i in cutoffs){
+            rfLowerT2Error <- randomForest(formula=Churn ~ .,data=trainset,ntree=min.err.idx[1], mtry=j,
+                                           importance=TRUE,localImp=TRUE,na.action=na.roughfix,replace=FALSE,cutoff=c(i,1-i))
+            rfLowerT2Error
+            
+            ###Evaluate by scoring the test set
+            prtestLowerT2Error <- predict(rfLowerT2Error, newdata=(mydata[test,]))
+            table1 = table(mydata[test,"Churn"], prtestLowerT2Error ,dnn=c("Actual", "Predicted"))
+            
+            #cost model
+            #type 1 error: customers we said would leave, but actually didn't. 
+            type1error = table1[1,2] * 1600 #FP
+            #type 2 error: customers we said wouldn't leave, but actually did. ie) 
+            type2error = table1[2,1] * 11500 
+            correctly_identified_loss = (table1[2,2] * 1600) + (table1[2,2] * .55 * 11500)
+            
+            
+            #add the costs of the two different errors to get an overall expected cost. ie) 
+            (overall_error = type1error + type2error + correctly_identified_loss)
+            (overall_error_per_cust = overall_error/sum(table1))
+            results = c(results,overall_error_per_cust)
+      }
+}
+
+d= data.frame(cutoffs,results)
+bestcutoff = d[which.min(d[,2]),1]
+bestresult = d[which.min(d[,2]),2]
+bestmtry = ceiling(which.min(d[,2])/length(cutoffs))
+
+#Overall best model:
+rfLowerT2Error <- randomForest(formula=Churn ~ .,data=trainset,ntree=204, mtry=4,
+                               importance=TRUE,localImp=TRUE,na.action=na.roughfix,replace=FALSE,cutoff=c(.65,.35))
+
+prtestLowerT2Error <- predict(rfLowerT2Error, newdata=(mydata[test,]))
+table1 = table(mydata[test,"Churn"], prtestLowerT2Error ,dnn=c("Actual", "Predicted"))
+table1
+
+type1error = table1[1,2] * 1600 #FP
+#type 2 error: customers we said wouldn't leave, but actually did. ie) 
+type2error = table1[2,1] * 11500 
+correctly_identified_loss = (table1[2,2] * 1600) + (table1[2,2] * .55 * 11500)
+
+
+#add the costs of the two different errors to get an overall expected cost. ie) 
+(overall_error = type1error + type2error + correctly_identified_loss)
+(overall_error_per_cust = overall_error/sum(table1))
+
+
+
+results = c(results,overall_error_per_cust)
+
+
+
+##############################
+### Boosting model###
+##############################
+
+
+rm(list=ls())
+"Assignment 2"
+"Group 2-05"
+
+installIfAbsentAndLoad <- function(neededVector) {
+      for(thispackage in neededVector) {
+            if( ! require(thispackage, character.only = TRUE) )
+            { install.packages(thispackage)}
+            require(thispackage, character.only = TRUE)
+      }
+}
+needed = c("ada")
+installIfAbsentAndLoad(needed)
+# ada is used to "fit a variety stochastic boosting models for a binary response"
+require(ada)
+
+# Read/clean in the data. Create nobs for each row of the data. 
+
+###########
+###Import the data
+mydata<-read.table("Assignment2TrainData.csv",sep=",",header=T)
+mydata[,3] <- as.factor(mydata[,3])
+dim(mydata)
+set.seed(5082)
+n <- nrow(mydata)
+train <- sample(n, 0.85*n)
+trainset <- mydata[train,-1]
+testset <- mydata[-train,-1] 
+nobs = nrow(mydata)
+
+#create a exponetial lossboosting model predicting churn using all other variables 
+##### default case ######
+bm <- ada(formula=Churn ~ .,data=mydata[train,],iter=50,bag.frac=0.5,control=rpart.control(maxdepth=30,
+                                                                                           cp=0.01,minsplit=20,xval=10))
+print(bm) 
+
+
+#create a exponetial lossboosting model predicting churn using all other variables
+##### 100 iter ######
+bm100 <- ada(formula=Churn ~ .,data=mydata[train,],iter=100,bag.frac=0.5,
+             control=rpart.control(maxdepth=30,cp=0.01,minsplit=20,xval=10))
+print(bm) 
+
+# Evaluate by scoring the training set
+prtrain <- predict(bm, newdata=mydata[train,])
+table1 = table(mydata[train,"Churn"], prtrain,dnn=c("Actual", "Predicted"))
+
+#cost model
+#type 1 error: customers we said would leave, but actually didn't. 
+type1error = table1[1,2] * 1600
+#type 2 error: customers we said wouldn't leave, but actually did. ie) 
+type2error = table1[2,1] * 11500
+correctly_identified_loss = (table1[2,2] * 1600) + (table1[2,2] * .55 * 11500)
+
+#add the costs of the two different errors to get an overall expected cost. ie) 
+(overall_error = type1error + type2error + correctly_identified_loss)
+(overall_error_per_cust = overall_error/sum(table1))
+round(100* table(mydata[train,"Churn"], prtrain,dnn=c("% Actual", "% Predicted"))/length(prtrain),1)
+
+# Evaluate by scoring the training setfor 100 iterations
+prtrain100 <- predict(bm100, newdata=mydata[train,])
+table(mydata[train,"Churn"], prtrain100,dnn=c("Actual", "Predicted"))
+round(100* table(mydata[train,"Churn"], prtrain100,dnn=c("% Actual", "% Predicted"))/length(prtrain100),1)
+
+#test set
+test <- setdiff(1:nobs, train) 
+prtest <- predict(bm, newdata=mydata[test,])
+table1 = table(mydata[test,"Churn"], prtest,dnn=c("Actual", "Predicted"))
+
+#Evaluate by scoring the test set for 100 iterations
+test100 <- setdiff(1:nobs, train) 
+prtest100 <- predict(bm100, newdata=mydata[test,])
+table1= table(mydata[test100,"Churn"], prtest100,dnn=c("Actual", "Predicted"))
+table1
+
+#cost model
+#type 1 error: customers we said would leave, but actually didn't. 
+type1error = table1[1,2] * 1600
+#type 2 error: customers we said wouldn't leave, but actually did. ie) 
+type2error = table1[2,1] * 11500
+correctly_identified_loss = (table1[2,2] * 1600) + (table1[2,2] * .55 * 11500)
+#add the costs of the two different errors to get an overall expected cost. ie) 
+(overall_error = type1error + type2error + correctly_identified_loss)
+(overall_error_per_cust = overall_error/sum(table1))
+#Cost: $2623.484
+
+
+
